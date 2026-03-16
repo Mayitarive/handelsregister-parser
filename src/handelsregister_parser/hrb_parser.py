@@ -57,6 +57,9 @@ def extract_hrb_block(text: str) -> str:
         "4. b)",
         "Geschäftsführer:",
         "Geschäftsführer:",
+        "Geschäftsführerin:",
+        "Geschäftsführerin:",
+        "Geschäftsführender Direktor:",
     ]
 
     start_index = -1
@@ -103,7 +106,13 @@ def extract_authority_text(block: str) -> str | None:
         (
             index
             for index, line in enumerate(lines)
-            if "Geschäftsführer:" in line or "Geschäftsführer:" in line
+            if (
+                "Geschäftsführer:" in line
+                or "Geschäftsführer:" in line
+                or "Geschäftsführerin:" in line
+                or "Geschäftsführerin:" in line
+                or "Geschäftsführender Direktor:" in line
+            )
         ),
         None,
     )
@@ -143,7 +152,7 @@ def extract_representative_lines(block: str) -> str:
     Extract only the text that contains representative entries.
 
     The function removes the HRB section heading and keeps only the
-    content starting from the Geschäftsführer label.
+    content starting from the representative label.
 
     Parameters
     ----------
@@ -158,6 +167,9 @@ def extract_representative_lines(block: str) -> str:
     marker_options = [
         "Geschäftsführer:",
         "Geschäftsführer:",
+        "Geschäftsführerin:",
+        "Geschäftsführerin:",
+        "Geschäftsführender Direktor:",
     ]
 
     start_index = -1
@@ -224,6 +236,20 @@ def parse_hrb_document(text: str, source_file: str) -> ParsedDocument:
 
     for line in representative_text.splitlines():
         line = line.strip()
+
+        if not line:
+            continue
+
+        for label in [
+            "Geschäftsführer:",
+            "Geschäftsführer:",
+            "Geschäftsführerin:",
+            "Geschäftsführerin:",
+            "Geschäftsführender Direktor:",
+        ]:
+            if line.startswith(label):
+                line = line[len(label):].strip()
+                break
 
         if not line:
             continue
