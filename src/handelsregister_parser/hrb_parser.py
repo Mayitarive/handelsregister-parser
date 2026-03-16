@@ -6,9 +6,18 @@ plain text that has already been extracted from a PDF.
 """
 
 import re
-from typing import List
 
-from handelsregister_parser.models import Representative
+from .constants import (
+    DOCUMENT_STATUS_FAIL,
+    DOCUMENT_STATUS_PARTIAL,
+    DOCUMENT_STATUS_SUCCESS,
+    ERROR_REASON_AUTHORITY_NOT_FOUND,
+    ERROR_REASON_NONE,
+    ERROR_REASON_REPRESENTATIVE_NOT_FOUND,
+    ERROR_REASON_SECTION_NOT_FOUND,
+)
+from .models import ParsedDocument, Representative
+from .register_metadata import extract_register_metadata
 
 
 SECTION_END_RE = re.compile(
@@ -22,6 +31,7 @@ PERSON_RE = re.compile(
     r"(?:,\s+\*(?P<dob>\d{2}\.\d{2}\.\d{4}))?"
     r"(?:,\s+(?P<city>[A-Za-zÄÖÜäöüß\-\s]+))?"
 )
+
 
 def extract_hrb_block(text: str) -> str:
     """
@@ -101,7 +111,6 @@ def extract_authority_text(block: str) -> str | None:
     if gf_index is None:
         return None
 
-    # Case 1: authority lines appear after the Geschäftsführer label.
     authority_lines_after: list[str] = []
 
     for line in lines[gf_index + 1 :]:
@@ -112,14 +121,12 @@ def extract_authority_text(block: str) -> str | None:
     if authority_lines_after:
         return " ".join(authority_lines_after).strip()
 
-    # Case 2: authority line appears immediately before the label.
     if gf_index > 0:
         previous_line = lines[gf_index - 1]
 
         if not PERSON_RE.search(previous_line):
             return previous_line.strip()
 
-    # Case 3: authority and representative may be inline on the same line.
     current_line = lines[gf_index]
     label_parts = current_line.split(":", 1)
 
@@ -129,6 +136,7 @@ def extract_authority_text(block: str) -> str | None:
             return remainder
 
     return None
+
 
 def extract_representative_lines(block: str) -> str:
     """
@@ -165,26 +173,48 @@ def extract_representative_lines(block: str) -> str:
 
     return block[start_index:].strip()
 
-def parse_hrb_representatives(text: str) -> List[Representative]:
+
+def parse_hrb_document(text: str, source_file: str) -> ParsedDocument:
     """
-    Parse Geschäftsführer representatives from an HRB document.
+    Parse an HRB document and return a structured ParsedDocument.
 
     Parameters
     ----------
     text : str
         Plain text extracted from an HRB document.
+    source_file : str
+        Source PDF filename.
 
     Returns
     -------
-    List[Representative]
-        Extracted representatives.
+    ParsedDocument
+        Parsed document containing metadata, status and representatives.
     """
+    register_type, register_number, register_id = extract_register_metadata(text)
+
+    parsed_document = ParsedDocument(
+        source_file=source_file,
+        register_type=register_type,
+        register_number=register_number,
+        register_id=register_id,
+        parse_status=DOCUMENT_STATUS_SUCCESS,
+        error_reason=ERROR_REASON_NONE,
+        block_found=False,
+        authority_found=False,
+        representatives=[],
+    )
+
     block = extract_hrb_block(text)
     if not block:
-        return []
+        parsed_document.parse_status = DOCUMENT_STATUS_FAIL
+        parsed_document.error_reason = ERROR_REASON_SECTION_NOT_FOUND
+        return parsed_document
+
+    parsed_document.block_found = True
 
     authority_raw = extract_authority_text(block)
-    representatives: list[Representative] = []
+    if authority_raw:
+        parsed_document.authority_found = True
 
     representative_text = extract_representative_lines(block)
 
@@ -193,7 +223,6 @@ def parse_hrb_representatives(text: str) -> List[Representative]:
     print("\n--- END REPRESENTATIVE TEXT ---\n")
 
     for line in representative_text.splitlines():
-
         line = line.strip()
 
         if not line:
@@ -213,7 +242,7 @@ def parse_hrb_representatives(text: str) -> List[Representative]:
             city = extra
             extra = None
 
-        representatives.append(
+        parsed_document.representatives.append(
             Representative(
                 role="geschaeftsfuehrer",
                 last_name=match.group("last_name").strip(),
@@ -224,4 +253,31 @@ def parse_hrb_representatives(text: str) -> List[Representative]:
             )
         )
 
-    return representatives
+    if not parsed_document.representatives:
+        parsed_document.parse_status = DOCUMENT_STATUS_FAIL
+        parsed_document.error_reason = ERROR_REASON_REPRESENTATIVE_NOT_FOUND
+        return parsed_document
+
+    if not parsed_document.authority_found:
+        parsed_document.parse_status = DOCUMENT_STATUS_PARTIAL
+        parsed_document.error_reason = ERROR_REASON_AUTHORITY_NOT_FOUND
+
+    return parsed_document
+
+
+def parse_hrb_representatives(text: str) -> list[Representative]:
+    """
+    Backward-compatible wrapper returning only representatives.
+
+    Parameters
+    ----------
+    text : str
+        Plain text extracted from an HRB document.
+
+    Returns
+    -------
+    list[Representative]
+        Extracted representatives.
+    """
+    parsed_document = parse_hrb_document(text=text, source_file="unknown")
+    return parsed_document.representatives
